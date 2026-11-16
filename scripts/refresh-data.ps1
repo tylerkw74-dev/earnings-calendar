@@ -202,15 +202,14 @@ try {
   $env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'
   Push-Location $RepoPath
   try {
+    $ErrorActionPreference = 'Continue'   # git writes normal progress to stderr; rely on exit codes
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
     if ($branch -ne 'main') { throw "Repo is on branch '$branch', expected main" }
-    git stash push --quiet -- data.json 2>&1 | Out-Null
-    git pull --ff-only --quiet origin main 2>&1 | ForEach-Object { Log "git: $_" }
-    if ($LASTEXITCODE -ne 0) { git stash pop --quiet 2>&1 | Out-Null; throw 'git pull --ff-only failed' }
-    git checkout --quiet stash@{0} -- data.json 2>&1 | Out-Null; git stash drop --quiet 2>&1 | Out-Null
     git add data.json
     git commit --quiet -m ("Weekly earnings data refresh {0:yyyy-MM-dd}" -f (Get-Date)) -m "$($dated.Count) dated events from $($clean.Count) tickers. Automated by scripts/refresh-data.ps1." 2>&1 | ForEach-Object { Log "git: $_" }
-    if ($LASTEXITCODE -ne 0) { Log 'Nothing to commit.' }
+    if ($LASTEXITCODE -ne 0) { Log 'Nothing new to commit.' }
+    git pull --rebase --quiet origin main 2>&1 | ForEach-Object { Log "git: $_" }
+    if ($LASTEXITCODE -ne 0) { git rebase --abort 2>&1 | Out-Null; throw 'git pull --rebase failed (someone else changed the repo?)' }
     git push --quiet origin main 2>&1 | ForEach-Object { Log "git: $_" }
     if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
     Log ("Pushed {0}" -f (git rev-parse --short HEAD))
