@@ -86,7 +86,12 @@ function Send-TeamEmail([string]$mode) {
     $bad = @($mail.Recipients | Where-Object { -not $_.Resolved } | ForEach-Object Name) -join ', '
     $mail.Save(); throw "Outlook could not resolve recipient(s): $bad (saved to Drafts instead)"
   }
-  if ($mode -eq 'Send') { $mail.Send(); Log "Email sent: '$subject' to $EmailTo" }
+  if ($mode -eq 'Send') {
+    $mark = Join-Path (Split-Path -Parent $logDir) 'last-email-sent.txt'
+    $today = '{0:yyyy-MM-dd}' -f (Get-Date)
+    if ((Test-Path -LiteralPath $mark) -and ((Get-Content -LiteralPath $mark -Raw).Trim() -eq $today)) { $mail.Delete(); Log 'Team email already sent today: not sending again.'; return }
+    $mail.Send(); Set-Content -LiteralPath $mark -Value $today; Log "Email sent: '$subject' to $EmailTo"
+  }
   else { $mail.Save(); Log "Email saved to Drafts (not sent): '$subject' to $EmailTo" }
 }
 
