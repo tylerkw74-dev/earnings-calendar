@@ -36,10 +36,28 @@ param(
   # Drafts for review), or None.
   [ValidateSet('Send', 'Draft', 'None')][string]$EmailMode = 'Send',
   [string]$EmailTo  = 'GMAnalysts; GMExecAdmin',
-  [string]$SiteUrl  = 'https://tylerkw74-dev.github.io/earnings-calendar/'
+  [string]$SiteUrl  = 'https://tylerkw74-dev.github.io/earnings-calendar/',
+  # -Auto is what the scheduled task passes (9:00 Monday, at logon, at unlock).
+  # It only runs once per week: on a weekday at/after Monday 9:00 if this
+  # week's update hasn't been published yet. Manual runs always run.
+  [switch]$Auto,
+  [int]$FactSetWaitMinutes = 30,
+  [string]$WorkstationExe  = 'C:\Program Files (x86)\FactSet\FDSWorkstation_x64.exe'
 )
 
 $ErrorActionPreference = 'Stop'
+$stateDir = Join-Path $env:LOCALAPPDATA 'EarningsCalendar'
+$publishMark = Join-Path $stateDir 'last-publish.txt'
+if ($Auto) {
+  $now = Get-Date; $dow = [int]$now.DayOfWeek
+  if ($dow -eq 0 -or $dow -eq 6) { exit 0 }                       # weekend
+  $weekStart = $now.Date.AddDays(1 - $dow).AddHours(9)            # this Monday 09:00
+  if ($now -lt $weekStart) { exit 0 }                              # Monday before 9:00
+  if (Test-Path -LiteralPath $publishMark) {
+    $lastPub = [datetime]::Parse((Get-Content -LiteralPath $publishMark -Raw).Trim())
+    if ($lastPub -ge $weekStart) { exit 0 }                        # already done this week
+  }
+}
 $logDir = Join-Path $env:LOCALAPPDATA 'EarningsCalendar\logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null
 $logFile = Join-Path $logDir ('refresh-{0:yyyy-MM-dd_HHmmss}.log' -f (Get-Date))
@@ -106,6 +124,22 @@ try {
   $copy = Join-Path $tempDir 'workbook.xlsx'
   Copy-Item -LiteralPath $WorkbookPath -Destination $copy
 
+  # --- Make sure FactSet's background connection is running -------------------
+  # FDSPipe/FDSTray start when FactSet Workstation is launched and keep running
+  # after its window is closed; the Excel add-in fetches data through them.
+  if (-not (Get-Process FDSPipe -ErrorAction SilentlyContinue)) {
+    Log 'FactSet is not running: starting FactSet Workstation'
+    if (Test-Path -LiteralPath $WorkstationExe) { Start-Process -FilePath $WorkstationExe } else { Log "Workstation not found at $WorkstationExe" }
+    $deadline = (Get-Date).AddMinutes($FactSetWaitMinutes); $told = $false
+    while (-not (Get-Process FDSPipe -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+      Start-Sleep -Seconds 15
+      if (-not $told) { Notify 'Earnings calendar is waiting for FactSet' 'Please sign in to FactSet Workstation; the weekly update will continue automatically.'; $told = $true }
+    }
+    if (-not (Get-Process FDSPipe -ErrorAction SilentlyContinue)) { throw "FactSet did not start within $FactSetWaitMinutes minutes (not signed in?)" }
+    Log 'FactSet connection is up'
+    Start-Sleep -Seconds 20
+  }
+
   # --- Refresh in a hidden Excel -------------------------------------------
   $xl = New-Object -ComObject Excel.Application
   $xl.Visible = $false; $xl.DisplayAlerts = $false; $xl.AskToUpdateLinks = $false
@@ -114,6 +148,16 @@ try {
   [void]$xl.Workbooks.Add(); $xl.Calculation = -4135   # manual: nothing recalcs until we ask
   $wb = $xl.Workbooks.Open($copy, 0, $false)
   $ws = $wb.Worksheets.Item($SheetName)
+
+  # Probe: a live lookup that can't come from the workbook's saved values.
+  # Waits until FactSet actually answers (e.g. right after sign-in).
+  $probe = $ws.Range('Z1')
+  $probe.Formula = '=FDSRC("-","MSFT-US","FF_CO_NAME()")'
+  $deadline = (Get-Date).AddMinutes([Math]::Min(10, $FactSetWaitMinutes))
+  do { $xl.Calculate(); Start-Sleep -Seconds 5; $ans = [string]$probe.Text } while ($ans -notlike 'Microsoft*' -and (Get-Date) -lt $deadline)
+  if ($ans -notlike 'Microsoft*') { throw "FactSet is not returning live data (probe returned '$ans'). Is FactSet signed in?" }
+  $probe.ClearContents()
+  Log 'FactSet live-data probe OK'
 
   Log 'Running FDS_RECALC_NOW'
   [void]$xl.Run('FDS_RECALC_NOW')
@@ -220,6 +264,7 @@ try {
     Log 'Live site confirmed.'
     Send-TeamEmail $EmailMode
   }
+  Set-Content -LiteralPath $publishMark -Value (Get-Date).ToString('o')
   if ($warnings.Count) { Notify 'Earnings calendar updated (with warnings)' ("{0} events published. {1} warning(s): see {2}" -f $dated.Count, $warnings.Count, $logFile) }
   Log 'Done.'
 }
