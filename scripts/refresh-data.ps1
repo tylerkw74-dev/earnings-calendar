@@ -32,9 +32,9 @@ param(
   [int]$TimeoutSeconds  = 300,
   [switch]$NoPush,
   [switch]$Force,
-  # Team email after a successful publish: Send (scheduled runs), Draft (save to
-  # Drafts for review), or None.
-  [ValidateSet('Send', 'Draft', 'None')][string]$EmailMode = 'Send',
+  # Team email after a successful publish. Defaults to Draft so manual/test runs
+  # never email the team; only the scheduled task passes -EmailMode Send.
+  [ValidateSet('Send', 'Draft', 'None')][string]$EmailMode = 'Draft',
   [string]$EmailTo  = 'GMAnalysts; GMExecAdmin',
   [string]$SiteUrl  = 'https://tylerkw74-dev.github.io/earnings-calendar/',
   # -Auto is what the scheduled task passes (9:00 Monday, at logon, at unlock).
